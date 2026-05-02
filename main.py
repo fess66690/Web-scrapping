@@ -7,7 +7,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-
 # Ключевые слова для поиска (строго по заданию)
 KEYWORDS = ['дизайн', 'фото', 'web', 'python']
 
@@ -25,36 +24,32 @@ def setup_driver():
 
 
 def get_articles_data(driver):
-    """Получение данных статей с главной страницы."""
+    """Получение данных статей с главной страницы"""
     driver.get(URL)
 
     wait = WebDriverWait(driver, 10)
-    wait.until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.article-snippet')))
 
-    # Ждём загрузки контента
-    time.sleep(2)
-
-    # Находим все карточки статей
-    article_cards = driver.find_elements(By.TAG_NAME, 'article')
-
+    article_cards = driver.find_elements(By.CSS_SELECTOR, 'div.article-snippet')
     articles_data = []
 
-    for card in article_cards[:10]:  # Берём первые 10 статей
+    for card in article_cards:
         try:
-            # Извлекаем заголовок и ссылку
+            # Заголовок и ссылка
             title_tag = card.find_element(By.CSS_SELECTOR, 'a.tm-title__link')
             title = title_tag.text
             link = title_tag.get_attribute('href')
 
-            # Извлекаем дату
+            # Дата
             time_tag = card.find_element(By.TAG_NAME, 'time')
             date_str = time_tag.get_attribute('datetime')[:10]
             date = datetime.strptime(date_str, '%Y-%m-%d').strftime('%d.%m.%Y')
 
-            # Извлекаем текст превью
+            # Текст превью
             try:
-                preview_element = card.find_element(By.CSS_SELECTOR, 'div.article-formatted-body')
-                preview_text = preview_element.text
+                lead_div = card.find_element(By.CSS_SELECTOR, 'div.lead')
+                preview_div = lead_div.find_element(By.CSS_SELECTOR, 'div:nth-child(2)')
+                preview_text = preview_div.text
             except Exception:
                 preview_text = ""
 
@@ -65,8 +60,7 @@ def get_articles_data(driver):
                 'preview_text': preview_text
             })
 
-        except Exception as e:
-            # Пропускаем проблемные карточки
+        except Exception:
             continue
 
     return articles_data
@@ -77,36 +71,38 @@ def get_full_text(driver, article_url):
     driver.get(article_url)
 
     wait = WebDriverWait(driver, 10)
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.article-formatted-body')))
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#post-content-body')))
 
     try:
-        body_element = driver.find_element(By.CSS_SELECTOR, 'div.article-formatted-body')
+        body_element = driver.find_element(By.CSS_SELECTOR, '#post-content-body')
         return body_element.text
     except Exception:
         return ""
 
 
 def contains_whole_word(text, word):
-    """Проверяет, содержит ли текст точное совпадение слова без учета регистра"""
+    """Проверка текста на точное совпадение слова"""
     if not text:
         return False
 
+    # Экранируем спецсимволы в слове
     escaped_word = re.escape(word)
-    pattern = rf'(?<![а-яА-Яa-zA-Z]){escaped_word}(?![а-яА-Яa-zA-Z])'
+
+    pattern = rf'(?<![a-zа-яё0-9_\-]){escaped_word}(?![a-zа-яё0-9_\-])'
+
     return bool(re.search(pattern, text, re.IGNORECASE))
 
 
-def check_keywords_match(title, preview_text, full_text, keywords):
-    """Проверка наличия ключевых слов в заголовке, превью или полном тексте"""
-    matched = []
+def check_keywords_in_text(text, keywords):
+    """Проверка наличия ключевых слов в тексте, возвращает список найденных"""
+    if not text:
+        return []
 
+    found = []
     for keyword in keywords:
-        if (contains_whole_word(title, keyword) or
-            contains_whole_word(preview_text, keyword) or
-            contains_whole_word(full_text, keyword)):
-            matched.append(keyword)
-
-    return matched
+        if contains_whole_word(text, keyword):
+            found.append(keyword)
+    return found
 
 
 def main():
@@ -115,43 +111,43 @@ def main():
 
     try:
         driver = setup_driver()
-
-        # Получаем данные статей (избегая stale reference)
         articles = get_articles_data(driver)
+
         results = []
 
-        for idx, article in enumerate(articles, 1):
-            # Сначала проверяем заголовок и превью
-            quick_matched = check_keywords_match(
-                article['title'],
-                article['preview_text'],
-                "",
-                KEYWORDS
-            )
+        for article in articles:
+            # Поиск в заголовке
+            title_keywords = check_keywords_in_text(article['title'], KEYWORDS)
 
-            if quick_matched:
+            if title_keywords:
                 results.append(f"{article['date']} – {article['title']} – {article['link']}")
-            else:
-                # Загружаем полный текст
-                full_text = get_full_text(driver, article['link'])
-                full_matched = check_keywords_match(
-                    article['title'],
-                    article['preview_text'],
-                    full_text,
-                    KEYWORDS
-                )
+                continue
 
-                if full_matched:
-                    results.append(f"{article['date']} – {article['title']} – {article['link']}")
+            # Поиск в превью
+            preview_keywords = check_keywords_in_text(article['preview_text'], KEYWORDS)
 
-                time.sleep(0.5)
+            if preview_keywords:
+                results.append(f"{article['date']} – {article['title']} – {article['link']}")
+                continue
+
+            # Поиск в полном тексте
+            full_text = get_full_text(driver, article['link'])
+            full_keywords = check_keywords_in_text(full_text, KEYWORDS)
+
+            if full_keywords:
+                results.append(f"{article['date']} – {article['title']} – {article['link']}")
+            # if full_keywords:
+            #     results.append(f"{article['date']} – {article['title']} – {article['link']} [найдено в полном тексте]")
+
+            # Задержка между запросами
+            time.sleep(0.5)
 
         # Вывод результатов
         if results:
             print('\n'.join(results))
 
-    except Exception as e:
-        print(f"Ошибка: {e}")
+    except Exception:
+        pass
 
     finally:
         if driver:
