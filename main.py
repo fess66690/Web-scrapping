@@ -1,100 +1,37 @@
+import json
+from time import sleep
 import re
-import time
-from datetime import datetime
 
-from selenium import webdriver
+from selenium.webdriver import Chrome, ChromeOptions
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
-# Ключевые слова для поиска (строго по заданию)
 KEYWORDS = ['дизайн', 'фото', 'web', 'python']
 
-# URL страницы со свежими статьями
-URL = 'https://habr.com/ru/articles/'
+options = ChromeOptions()
+options.add_argument('--headless')
 
 
-def setup_driver():
-    """Настройка и запуск браузера Chrome в headless-режиме"""
-    options = webdriver.ChromeOptions()
-    options.add_argument('--headless')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    return webdriver.Chrome(options=options)
-
-
-def get_articles_data(driver):
-    """Получение данных статей с главной страницы"""
-    driver.get(URL)
-
-    wait = WebDriverWait(driver, 10)
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.article-snippet')))
-
-    article_cards = driver.find_elements(By.CSS_SELECTOR, 'div.article-snippet')
-    articles_data = []
-
-    for card in article_cards:
-        try:
-            # Заголовок и ссылка
-            title_tag = card.find_element(By.CSS_SELECTOR, 'a.tm-title__link')
-            title = title_tag.text
-            link = title_tag.get_attribute('href')
-
-            # Дата
-            time_tag = card.find_element(By.TAG_NAME, 'time')
-            date_str = time_tag.get_attribute('datetime')[:10]
-            date = datetime.strptime(date_str, '%Y-%m-%d').strftime('%d.%m.%Y')
-
-            # Текст превью
-            try:
-                lead_div = card.find_element(By.CSS_SELECTOR, 'div.lead')
-                preview_div = lead_div.find_element(By.CSS_SELECTOR, 'div:nth-child(2)')
-                preview_text = preview_div.text
-            except Exception:
-                preview_text = ""
-
-            articles_data.append({
-                'title': title,
-                'link': link,
-                'date': date,
-                'preview_text': preview_text
-            })
-
-        except Exception:
-            continue
-
-    return articles_data
-
-
-def get_full_text(driver, article_url):
-    """Получение полного текста статьи по ссылке"""
-    driver.get(article_url)
-
-    wait = WebDriverWait(driver, 10)
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#post-content-body')))
-
-    try:
-        body_element = driver.find_element(By.CSS_SELECTOR, '#post-content-body')
-        return body_element.text
-    except Exception:
-        return ""
+def wait_element(browser, delay=5, by=By.CSS_SELECTOR, value=None):
+    return WebDriverWait(browser, delay).until(
+        EC.presence_of_element_located((by, value))
+    )
 
 
 def contains_whole_word(text, word):
-    """Проверка текста на точное совпадение слова"""
+    """Проверяем точное совпадение целого слова без учета регистра"""
     if not text:
         return False
 
-    # Экранируем спецсимволы в слове
     escaped_word = re.escape(word)
 
     pattern = rf'(?<![a-zа-яё0-9_\-]){escaped_word}(?![a-zа-яё0-9_\-])'
-
     return bool(re.search(pattern, text, re.IGNORECASE))
 
 
 def check_keywords_in_text(text, keywords):
-    """Проверка наличия ключевых слов в тексте, возвращает список найденных"""
+    """Проверяем наличие ключевых слов в тексте"""
     if not text:
         return []
 
@@ -105,54 +42,41 @@ def check_keywords_in_text(text, keywords):
     return found
 
 
-def main():
-    """Основная функция"""
-    driver = None
+driver = Chrome(options=options)
+driver.get('https://habr.com/ru/articles/')
 
-    try:
-        driver = setup_driver()
-        articles = get_articles_data(driver)
+articles_block = wait_element(driver, value='div.tm-articles-list')
 
-        results = []
+articles_list = articles_block.find_elements(By.CSS_SELECTOR, value='article')
 
-        for article in articles:
-            # Поиск в заголовке
-            title_keywords = check_keywords_in_text(article['title'], KEYWORDS)
+parsed_data = []
+results = []
 
-            if title_keywords:
-                results.append(f"{article['date']} – {article['title']} – {article['link']}")
-                continue
+for article in articles_list:
 
-            # Поиск в превью
-            preview_keywords = check_keywords_in_text(article['preview_text'], KEYWORDS)
+    div_with_link = wait_element(article, value='h2')
 
-            if preview_keywords:
-                results.append(f"{article['date']} – {article['title']} – {article['link']}")
-                continue
+    link = wait_element(div_with_link, value='a').get_attribute('href')
+    header = wait_element(article, value='h2').text.strip()
+    time = wait_element(article, value='time').get_attribute('title')
+    text = wait_element(article, value='div.article-formatted-body').text.strip()
+    parsed_data.append({
+        'header': header,
+        'link': link,
+        'time': time,
+        'text': text,
+    })
 
-            # Поиск в полном тексте
-            full_text = get_full_text(driver, article['link'])
-            full_keywords = check_keywords_in_text(full_text, KEYWORDS)
+    matched_keywords = check_keywords_in_text(header, KEYWORDS) or check_keywords_in_text(text, KEYWORDS)
 
-            if full_keywords:
-                results.append(f"{article['date']} – {article['title']} – {article['link']}")
-            # if full_keywords:
-            #     results.append(f"{article['date']} – {article['title']} – {article['link']} [найдено в полном тексте]")
+    if matched_keywords:
+        results.append(f"{time} – {header} – {link}")
 
-            # Задержка между запросами
-            time.sleep(0.5)
-
-        # Вывод результатов
-        if results:
-            print('\n'.join(results))
-
-    except Exception:
-        pass
-
-    finally:
-        if driver:
-            driver.quit()
-
-
-if __name__ == "__main__":
-    main()
+# Вывод результатов в требуемом формате
+if results:
+    print('\n'.join(results))
+else:
+    print("Статей, соответствующих ключевым словам, не найдено.")
+#
+# with open('output.json', 'w', encoding='utf-8') as file:
+#     json.dump(parsed_data, file, ensure_ascii=False, indent=2)
